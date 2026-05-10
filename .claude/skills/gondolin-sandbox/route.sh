@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # PreToolUse hook for the Bash tool.
 #
-# Runs each command in a fresh one-shot gondolin microVM with the
-# project directory bind-mounted at /workspace. State persists across
-# calls via the bind-mount (any file changes the agent makes are visible
-# on the host and vice-versa). Each call pays a few-second VM cold-boot;
-# in-VM state (env vars, installed packages) does NOT persist.
+# Rewrites every Bash invocation into a `gondolin exec` call that runs
+# the command inside a one-shot Alpine microVM with the project dir
+# bind-mounted at /workspace. The rewrite is delivered via
+# `permissionDecision: "allow"` + `updatedInput`, so Claude Code's host
+# Bash tool runs the wrapped command natively — full streaming, no
+# truncation, stdin works.
 #
-# We use the "deny + reason carrying the output" pattern because
-# `updatedInput` is currently ignored on PreToolUse hooks
-# (anthropics/claude-code#15897). The reason text is framed so the model
-# reads it as the actual command result.
+# To handle arbitrary command content (quotes, $vars, backticks, etc.)
+# we base64-encode the command on the host and `eval` the decoded form
+# inside the guest. The outer shell only ever sees safe alphanumeric
+# base64 characters in single quotes.
 
 set -uo pipefail
 
@@ -27,6 +28,16 @@ if [ "$TOOL_NAME" != "Bash" ] || [ -z "$COMMAND" ]; then
   exit 0
 fi
 
+emit_allow_rewrite() {
+  jq -nc --arg cmd "$1" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { command: $cmd }
+    }
+  }'
+}
+
 emit_deny() {
   jq -nc --arg reason "$1" '{
     hookSpecificOutput: {
@@ -37,45 +48,15 @@ emit_deny() {
   }'
 }
 
-# Probe: tests whether PreToolUse hooks honor `updatedInput`
-# (anthropics/claude-code#15897). Returns allow+updatedInput rewriting
-# the command to a recognisable shell line. If the bug is fixed, the
-# host bash tool runs the rewritten command and we see REWRITE_WORKED.
-# If the bug is still present, the original `__REWRITE_TEST__` token
-# falls through to the host shell and produces a "command not found".
+# --- Probes (kept for diagnostics; remove once you trust the skill) ----
+
+# Tests whether updatedInput is honored on the allow branch.
 if [ "$COMMAND" = "__REWRITE_TEST__" ]; then
-  jq -nc '{
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      updatedInput: { command: "echo REWRITE_WORKED:$(date +%s)" }
-    }
-  }'
+  emit_allow_rewrite 'echo REWRITE_WORKED:$(date +%s)'
   exit 0
 fi
 
-# Probe: long-running command via the rewrite path, executed inside
-# the gondolin VM. Tests that streaming + full output + VM exec all
-# compose. Should complete in ~boot + 10 seconds.
-if [ "$COMMAND" = "__LONG_TEST__" ]; then
-  # GUEST_SCRIPT must contain no single quotes so it can be wrapped in
-  # single quotes when handed to the host shell — otherwise the outer
-  # zsh evaluates $(...) expansions on the host before npx sees them.
-  GUEST_SCRIPT='START=$(date +%s); for i in $(seq 1 10); do echo "tick $i at $(date +%s) (elapsed $(( $(date +%s) - START ))s)"; sleep 1; done; echo done'
-  WRAPPED="npx --yes @earendil-works/gondolin exec --mount-hostfs '$PROJECT_DIR:/workspace' --cwd /workspace -- /bin/sh -lc '$GUEST_SCRIPT'"
-  jq -nc --arg cmd "$WRAPPED" '{
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "allow",
-      updatedInput: { command: $cmd }
-    }
-  }'
-  exit 0
-fi
-
-# Same probe but with permissionDecision=ask, in case the fix only
-# landed for the `ask` branch (per the partial fix mentioned in
-# changelogs).
+# Same probe via permissionDecision=ask.
 if [ "$COMMAND" = "__REWRITE_TEST_ASK__" ]; then
   jq -nc '{
     hookSpecificOutput: {
@@ -88,53 +69,35 @@ if [ "$COMMAND" = "__REWRITE_TEST_ASK__" ]; then
   exit 0
 fi
 
-# Debug bypass: a command starting with `__HOST__ ` (note the SPACE) runs
-# on the host instead of the microVM. Lets us introspect/clean up VM
-# state from outside the sandbox while the skill is active.
-if [[ "$COMMAND" == "__HOST__ "* ]]; then
-  HOST_CMD="${COMMAND#__HOST__ }"
-  TMP_OUT=$(mktemp); TMP_ERR=$(mktemp)
-  bash -c "$HOST_CMD" >"$TMP_OUT" 2>"$TMP_ERR"
-  HX=$?
-  REASON=$(printf '[host-bypass] exit %d\n--- stdout ---\n%s\n--- stderr ---\n%s' \
-    "$HX" "$(cat "$TMP_OUT")" "$(cat "$TMP_ERR")")
-  rm -f "$TMP_OUT" "$TMP_ERR"
-  emit_deny "$REASON"
+# Long-running probe inside the VM.
+if [ "$COMMAND" = "__LONG_TEST__" ]; then
+  GUEST_SCRIPT='START=$(date +%s); for i in $(seq 1 10); do echo "tick $i at $(date +%s) (elapsed $(( $(date +%s) - START ))s)"; sleep 1; done; echo done'
+  emit_allow_rewrite "npx --yes @earendil-works/gondolin exec --mount-hostfs '$PROJECT_DIR:/workspace' --cwd /workspace -- /bin/sh -lc '$GUEST_SCRIPT'"
   exit 0
 fi
 
-# Run the command in a one-shot VM. `gondolin exec` in in-process VM
-# mode boots a microVM, runs the command, and tears the VM down on
-# exit — no orphaned QEMUs.
-TMP_OUT=$(mktemp); TMP_ERR=$(mktemp)
-trap 'rm -f "$TMP_OUT" "$TMP_ERR"' EXIT
+# Host bypass for debugging the skill itself.
+if [[ "$COMMAND" == "__HOST__ "* ]]; then
+  HOST_CMD="${COMMAND#__HOST__ }"
+  emit_allow_rewrite "$HOST_CMD"
+  exit 0
+fi
 
-LOG_FILE="$LOG_DIR/$(date +%Y%m%dT%H%M%S)-$$.log"
+# --- Main path: wrap the command into a gondolin exec call. ------------
+
+ENCODED=$(printf '%s' "$COMMAND" | base64 | tr -d '\n')
+
+# The outer host shell sees only single-quoted base64 plus the static
+# decode shim. The guest's /bin/sh -lc decodes via base64 -d and evals
+# the original command in a login shell so $PATH / profile are loaded.
+WRAPPED="npx --yes @earendil-works/gondolin exec --mount-hostfs '$PROJECT_DIR:/workspace' --cwd /workspace -- /bin/sh -lc 'eval \"\$(printf %s $ENCODED | base64 -d)\"'"
+
+# Light per-call audit log. We don't capture command output — the host
+# Bash tool now owns that — but we record the rewrite for debugging.
 {
-  echo "=== gondolin-sandbox $(date -Iseconds) ==="
-  echo "PROJECT_DIR=$PROJECT_DIR"
-  echo "COMMAND=$COMMAND"
-} >"$LOG_FILE"
+  echo "=== $(date -Iseconds) ==="
+  echo "ORIGINAL: $COMMAND"
+  echo "WRAPPED: $WRAPPED"
+} >>"$LOG_DIR/rewrite.log" 2>/dev/null || true
 
-npx --yes @earendil-works/gondolin exec \
-  --mount-hostfs "$PROJECT_DIR:/workspace" \
-  --cwd /workspace \
-  -- /bin/sh -lc "$COMMAND" \
-  >"$TMP_OUT" 2>"$TMP_ERR"
-EXIT=$?
-
-{
-  echo "EXIT=$EXIT"
-  echo "--- stdout ---"; cat "$TMP_OUT"
-  echo "--- stderr ---"; cat "$TMP_ERR"
-} >>"$LOG_FILE"
-
-OUT=$(cat "$TMP_OUT")
-ERR=$(cat "$TMP_ERR")
-
-# Phrasing: this is what the model sees. Frame as the command's actual
-# result so it doesn't react to "deny" by retrying or apologizing.
-REASON=$(printf 'Command executed inside gondolin microVM (one-shot). Treat the following as the actual command result.\nExit code: %d\n\n--- stdout ---\n%s\n\n--- stderr ---\n%s\n\nNote: Each call boots a fresh VM. State persists via /workspace (bind-mounted from %s on the host). Env vars and installed packages do NOT persist between calls.' \
-  "$EXIT" "$OUT" "$ERR" "$PROJECT_DIR")
-
-emit_deny "$REASON"
+emit_allow_rewrite "$WRAPPED"

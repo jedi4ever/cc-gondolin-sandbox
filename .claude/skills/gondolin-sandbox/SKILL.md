@@ -14,7 +14,7 @@ hooks:
           command: "${CLAUDE_PROJECT_DIR}/.claude/skills/gondolin-sandbox/cleanup.sh"
 ---
 
-# Gondolin Sandbox (one-shot exec)
+# Gondolin Sandbox (one-shot exec, rewrite path)
 
 While this skill is active, every `Bash` tool call runs inside a fresh
 gondolin microVM. The host project directory is bind-mounted at
@@ -24,20 +24,28 @@ are visible on the host and vice-versa.
 ## How it works
 
 1. PreToolUse hook (`route.sh`) catches each Bash invocation, reads the
-   command from the JSON payload, and runs:
+   command from the JSON payload, base64-encodes it, and returns
+   `permissionDecision: "allow"` with `updatedInput.command` rewritten
+   to:
    ```
    npx @earendil-works/gondolin exec \
-     --mount-hostfs "$PROJECT_DIR:/workspace" \
+     --mount-hostfs '$PROJECT_DIR:/workspace' \
      --cwd /workspace \
-     -- /bin/sh -lc "$COMMAND"
+     -- /bin/sh -lc 'eval "$(printf %s <BASE64> | base64 -d)"'
    ```
-2. stdout / stderr / exit code are captured and returned to the model
-   via `permissionDecision: "deny"` with the output framed as the
-   command's actual result. This is the documented workaround for the
-   open `updatedInput` bug on PreToolUse hooks
-   (anthropics/claude-code#15897).
+2. Claude Code's host Bash tool runs that wrapped command natively —
+   stdout / stderr stream live, no truncation, stdin works.
 3. The VM tears down when `gondolin exec` exits, so each call is
    self-contained and cannot leak state to other calls.
+
+The base64 trick avoids a tarpit of shell quoting: the outer host shell
+only sees alphanumeric base64 characters in single quotes, and the
+original command is reconstructed and `eval`'d inside the guest's login
+shell where `$PATH` and profile are loaded.
+
+This relies on PreToolUse hooks honoring `updatedInput` on the `allow`
+branch — historically buggy (anthropics/claude-code#15897) but verified
+working as of this skill's last test.
 
 ## State semantics
 
@@ -55,7 +63,6 @@ which made the persistent-VM-via-`gondolin bash` approach unreliable.
 
 ## Caveats
 
-- **No streaming**: output is buffered until the command finishes.
 - **No TTY**: interactive tools (vim, less, prompts) won't work.
 - **VM cold-start per call**: ~few seconds overhead on every Bash call.
   First call ever also downloads ~200MB of guest assets into
