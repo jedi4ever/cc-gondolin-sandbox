@@ -60,9 +60,21 @@ if [[ "$COMMAND" == "__HOST__ "* ]]; then
   exit 0
 fi
 
-# --- Per-Claude-session VM state -------------------------------------
+# Cooperative scope prefix:
+#   __SCOPE=<name>__ <cmd>
+# Routes <cmd> to a VM whose state is namespaced by <name>. Each
+# distinct scope name gets its own daemon and microVM. The default
+# scope ("main") is shared by the orchestrator and any subagents that
+# don't opt into a different scope.
+SCOPE="main"
+if [[ "$COMMAND" =~ ^__SCOPE=([A-Za-z0-9_-]+)__\ (.*)$ ]]; then
+  SCOPE="${BASH_REMATCH[1]}"
+  COMMAND="${BASH_REMATCH[2]}"
+fi
 
-SESSION_DIR="$HOME/.cache/gondolin-skill/$SESSION_ID"
+# --- Per-Claude-session, per-scope VM state --------------------------
+
+SESSION_DIR="$HOME/.cache/gondolin-skill/$SESSION_ID/$SCOPE"
 SOCK="$SESSION_DIR/vm.sock"
 DAEMON_LOG="$SESSION_DIR/daemon.log"
 DAEMON_PID_FILE="$SESSION_DIR/daemon.pid"
