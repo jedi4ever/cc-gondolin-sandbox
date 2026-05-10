@@ -1,17 +1,6 @@
 ---
 name: gondolin-sandbox
-description: Routes every Bash command through a persistent gondolin microVM (Alpine Linux on QEMU) for the lifetime of the Claude session. State persists across calls — installed packages, env vars, background processes, and files written outside /workspace all survive between commands. Use when shell commands should execute in an isolated sandbox while still being able to read and write the host project directory. Activate for tasks involving untrusted code, agent-generated scripts, network-restricted execution, or microVM sandboxing.
-hooks:
-  PreToolUse:
-    - matcher: "Bash"
-      hooks:
-        - type: command
-          command: "${CLAUDE_PROJECT_DIR}/.claude/skills/gondolin-sandbox/route.sh"
-  SessionEnd:
-    - matcher: "*"
-      hooks:
-        - type: command
-          command: "${CLAUDE_PROJECT_DIR}/.claude/skills/gondolin-sandbox/cleanup.sh"
+description: Documents the persistent gondolin microVM Bash sandbox configured at the project level. The actual hook bindings live in .claude/settings.json so they apply to subagents and the main orchestrator alike. Read when investigating sandbox behavior or extending the routing logic.
 ---
 
 # Gondolin Sandbox (persistent VM)
@@ -77,9 +66,9 @@ over the socket.
   command per connection at a time).
 - **Requires** Node ≥ 23.6 and QEMU on the host
   (`brew install qemu` on macOS).
-- **Skill-scoped**, not session-scoped — the hooks only fire while the
-  skill is loaded into context. To make routing always-on for a
-  project, copy the same `hooks:` block into `.claude/settings.json`.
+- **Project-scoped** via `.claude/settings.json` — hooks fire for every
+  agent in this project (main orchestrator and any subagents),
+  regardless of whether this skill is loaded in context.
 
 ## Debug bypass
 
