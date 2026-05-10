@@ -37,6 +37,57 @@ emit_deny() {
   }'
 }
 
+# Probe: tests whether PreToolUse hooks honor `updatedInput`
+# (anthropics/claude-code#15897). Returns allow+updatedInput rewriting
+# the command to a recognisable shell line. If the bug is fixed, the
+# host bash tool runs the rewritten command and we see REWRITE_WORKED.
+# If the bug is still present, the original `__REWRITE_TEST__` token
+# falls through to the host shell and produces a "command not found".
+if [ "$COMMAND" = "__REWRITE_TEST__" ]; then
+  jq -nc '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { command: "echo REWRITE_WORKED:$(date +%s)" }
+    }
+  }'
+  exit 0
+fi
+
+# Probe: long-running command via the rewrite path, executed inside
+# the gondolin VM. Tests that streaming + full output + VM exec all
+# compose. Should complete in ~boot + 10 seconds.
+if [ "$COMMAND" = "__LONG_TEST__" ]; then
+  # GUEST_SCRIPT must contain no single quotes so it can be wrapped in
+  # single quotes when handed to the host shell — otherwise the outer
+  # zsh evaluates $(...) expansions on the host before npx sees them.
+  GUEST_SCRIPT='START=$(date +%s); for i in $(seq 1 10); do echo "tick $i at $(date +%s) (elapsed $(( $(date +%s) - START ))s)"; sleep 1; done; echo done'
+  WRAPPED="npx --yes @earendil-works/gondolin exec --mount-hostfs '$PROJECT_DIR:/workspace' --cwd /workspace -- /bin/sh -lc '$GUEST_SCRIPT'"
+  jq -nc --arg cmd "$WRAPPED" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: { command: $cmd }
+    }
+  }'
+  exit 0
+fi
+
+# Same probe but with permissionDecision=ask, in case the fix only
+# landed for the `ask` branch (per the partial fix mentioned in
+# changelogs).
+if [ "$COMMAND" = "__REWRITE_TEST_ASK__" ]; then
+  jq -nc '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "ask",
+      permissionDecisionReason: "rewrite-bug probe (ask path)",
+      updatedInput: { command: "echo REWRITE_WORKED_ASK:$(date +%s)" }
+    }
+  }'
+  exit 0
+fi
+
 # Debug bypass: a command starting with `__HOST__ ` (note the SPACE) runs
 # on the host instead of the microVM. Lets us introspect/clean up VM
 # state from outside the sandbox while the skill is active.
