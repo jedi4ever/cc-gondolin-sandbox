@@ -1,17 +1,35 @@
 #!/usr/bin/env bash
-# SessionEnd hook: best-effort cleanup of any leaked QEMU VMs spawned by
-# the gondolin skill during this session.
-#
-# Each one-shot `gondolin exec` should clean up its own QEMU on exit, but
-# if the hook process is killed mid-flight QEMU can be reparented to PID
-# 1. We can't reliably distinguish OUR qemu processes from any other
-# gondolin VMs the user runs, so this hook does nothing destructive by
-# default. Set GONDOLIN_KILL_ALL_QEMU=1 to opt in to a blanket
-# `pkill qemu-system-aarch64` on session end.
+# SessionEnd hook: gracefully shut down the per-Claude-session gondolin
+# daemon and tear down its microVM.
 set -uo pipefail
 
-if [ "${GONDOLIN_KILL_ALL_QEMU:-0}" = "1" ]; then
-  pkill -9 -f 'qemu-system-aarch64' 2>/dev/null || true
+RUNTIME_DIR="${GONDOLIN_SKILL_RUNTIME_DIR:-$HOME/.cache/gondolin-skill/runtime}"
+
+INPUT="$(cat 2>/dev/null || true)"
+SESSION_ID=$(jq -r '.session_id // empty' <<<"$INPUT" 2>/dev/null || true)
+[ -z "$SESSION_ID" ] && exit 0
+
+SESSION_DIR="$HOME/.cache/gondolin-skill/$SESSION_ID"
+SOCK="$SESSION_DIR/vm.sock"
+PID_FILE="$SESSION_DIR/daemon.pid"
+
+# Polite shutdown over the socket: the daemon will await vm.close() and
+# unlink the socket itself.
+if [ -S "$SOCK" ] && [ -f "$RUNTIME_DIR/helper.mjs" ]; then
+  node "$RUNTIME_DIR/helper.mjs" shutdown --sock "$SOCK" 2>/dev/null || true
 fi
 
-exit 0
+# Backstop: if a PID file exists and the process is still alive after a
+# short grace period, kill it.
+if [ -f "$PID_FILE" ]; then
+  PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
+  if [ -n "$PID" ]; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$PID" 2>/dev/null || break
+      sleep 0.5
+    done
+    kill -0 "$PID" 2>/dev/null && kill -KILL "$PID" 2>/dev/null || true
+  fi
+fi
+
+rm -rf "$SESSION_DIR"

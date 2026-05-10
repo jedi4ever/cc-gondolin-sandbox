@@ -1,6 +1,6 @@
 ---
 name: gondolin-sandbox
-description: Routes every Bash command through a gondolin microVM (Alpine Linux on QEMU) one call at a time. Use when shell commands should execute in an isolated sandbox while still being able to read and write the host project directory. Activate for tasks involving untrusted code, agent-generated scripts, network-restricted execution, or microVM sandboxing.
+description: Routes every Bash command through a persistent gondolin microVM (Alpine Linux on QEMU) for the lifetime of the Claude session. State persists across calls — installed packages, env vars, background processes, and files written outside /workspace all survive between commands. Use when shell commands should execute in an isolated sandbox while still being able to read and write the host project directory. Activate for tasks involving untrusted code, agent-generated scripts, network-restricted execution, or microVM sandboxing.
 hooks:
   PreToolUse:
     - matcher: "Bash"
@@ -14,77 +14,87 @@ hooks:
           command: "${CLAUDE_PROJECT_DIR}/.claude/skills/gondolin-sandbox/cleanup.sh"
 ---
 
-# Gondolin Sandbox (one-shot exec, rewrite path)
+# Gondolin Sandbox (persistent VM)
 
-While this skill is active, every `Bash` tool call runs inside a fresh
-gondolin microVM. The host project directory is bind-mounted at
-`/workspace` inside the guest — file changes the agent makes via Bash
-are visible on the host and vice-versa.
+While this skill is active, every `Bash` tool call runs inside a
+**single long-running** gondolin microVM scoped to the current Claude
+session. The host project directory is bind-mounted at `/workspace`
+inside the guest. State persists across calls — env vars, installed
+packages, background processes, and files anywhere in the guest
+rootfs all survive between commands until SessionEnd.
 
 ## How it works
 
-1. PreToolUse hook (`route.sh`) catches each Bash invocation, reads the
-   command from the JSON payload, base64-encodes it, and returns
+1. The first Bash call lazy-boots a Node helper (`helper.mjs`) in
+   daemon mode. The daemon uses gondolin's SDK (`VM.create`) to boot a
+   microVM with `/workspace` bind-mounted, then listens on a Unix
+   socket at `~/.cache/gondolin-skill/<session-id>/vm.sock`.
+2. The PreToolUse hook (`route.sh`) catches each Bash invocation,
+   base64-encodes the command, and returns
    `permissionDecision: "allow"` with `updatedInput.command` rewritten
-   to:
-   ```
-   npx @earendil-works/gondolin exec \
-     --mount-hostfs '$PROJECT_DIR:/workspace' \
-     --cwd /workspace \
-     -- /bin/sh -lc 'eval "$(printf %s <BASE64> | base64 -d)"'
-   ```
-2. Claude Code's host Bash tool runs that wrapped command natively —
-   stdout / stderr stream live, no truncation, stdin works.
-3. The VM tears down when `gondolin exec` exits, so each call is
-   self-contained and cannot leak state to other calls.
-
-The base64 trick avoids a tarpit of shell quoting: the outer host shell
-only sees alphanumeric base64 characters in single quotes, and the
-original command is reconstructed and `eval`'d inside the guest's login
-shell where `$PATH` and profile are loaded.
-
-This relies on PreToolUse hooks honoring `updatedInput` on the `allow`
-branch — historically buggy (anthropics/claude-code#15897) but verified
-working as of this skill's last test.
+   to `node helper.mjs exec --sock <socket> <BASE64>`.
+3. Claude Code's host Bash tool runs that wrapped command natively.
+   `helper.mjs exec` connects to the daemon, sends the command, and
+   streams stdout/stderr back to its own stdout/stderr as bytes
+   arrive — so output appears in real time in the agent's view.
+4. The SessionEnd hook (`cleanup.sh`) sends a `shutdown` request to
+   the daemon, which calls `vm.close()` to tear the VM down cleanly.
 
 ## State semantics
 
-- **Persists across calls**: anything written under `/workspace` (i.e.
-  the host project dir).
-- **Does NOT persist**: env vars, installed packages, background
-  processes, anything written outside `/workspace`. Each call gets a
-  fresh Alpine rootfs.
+- **Persists** for the entire Claude session: env vars, installed
+  packages (`apk add ...`), files anywhere in the guest, background
+  processes, working directory between calls.
+- **Synced with host** via `/workspace`: the bind-mount means file
+  changes the agent makes there are visible on the host immediately,
+  and host edits are visible in the guest.
+- **Lost at SessionEnd**: the VM is destroyed and a fresh one boots
+  for the next session.
 
-To get a long-running persistent VM (so installed packages and env
-survive across calls), the next iteration would need a small Node helper
-that uses gondolin's `VM.create()` SDK and exposes a control socket —
-the bare CLI doesn't register a session in non-TTY background spawns,
-which made the persistent-VM-via-`gondolin bash` approach unreliable.
+## First-run setup
+
+The first time the skill is used, `route.sh` populates a runtime
+cache at `~/.cache/gondolin-skill/runtime/` by running:
+```
+npm install --silent --no-fund --no-audit @earendil-works/gondolin@latest
+```
+into that directory. After this one-time install, subsequent sessions
+just spawn the helper out of the cache.
+
+VM cold-boot (~few seconds + first-ever ~200MB image download) is paid
+**once per session**, not per call. Subsequent calls just round-trip
+over the socket.
 
 ## Caveats
 
-- **No TTY**: interactive tools (vim, less, prompts) won't work.
-- **VM cold-start per call**: ~few seconds overhead on every Bash call.
-  First call ever also downloads ~200MB of guest assets into
-  `~/.cache/gondolin/images/`.
+- **No TTY**: interactive tools (vim, less, prompts) won't work — the
+  guest is fed commands one at a time via the protocol, not via a
+  pseudo-terminal.
+- **No host-shell features in commands**: each command is wrapped in
+  `/bin/sh -lc <cmd>` inside the guest. zsh-isms won't work.
+- **Single VM per Claude session**: parallel Bash invocations from the
+  same session will queue on the daemon (the helper handles one
+  command per connection at a time).
 - **Requires** Node ≥ 23.6 and QEMU on the host
   (`brew install qemu` on macOS).
 - **Skill-scoped**, not session-scoped — the hooks only fire while the
-  skill is loaded into context. To make routing always-on for a project,
-  copy the same `hooks:` block into `.claude/settings.json`.
+  skill is loaded into context. To make routing always-on for a
+  project, copy the same `hooks:` block into `.claude/settings.json`.
 
 ## Debug bypass
 
-While iterating on the skill itself, you can prefix a Bash command with
-`__HOST__ ` (note the trailing space) to make `route.sh` execute the
-command on the host instead of the microVM. Useful for inspecting VM
-state, killing leaked QEMU processes, etc. The bypass is implemented in
-`route.sh` lines 38–48; remove that block before treating the skill as
-production-ready.
+Prefix a Bash command with `__HOST__ ` (note the trailing space) to
+make `route.sh` rewrite to the unwrapped host command — useful for
+inspecting VM state, killing leaked QEMU processes, or running git on
+the host. Probe `__REWRITE_TEST__` verifies that PreToolUse hooks
+honor `updatedInput` on the `allow` branch.
 
 ## Files
 
-- `route.sh` — `PreToolUse` Bash router
-- `cleanup.sh` — `SessionEnd` (no-op by default; set
-  `GONDOLIN_KILL_ALL_QEMU=1` to opt into blanket QEMU cleanup)
-- `~/.cache/gondolin-skill/logs/` — per-call command logs (timestamped)
+- `route.sh` — `PreToolUse` Bash router (lazy-boot + rewrite)
+- `helper.mjs` — Node SDK helper (daemon, exec client, shutdown)
+- `cleanup.sh` — `SessionEnd` graceful daemon shutdown
+- `~/.cache/gondolin-skill/<session-id>/` — per-session VM state
+  (socket, daemon log, daemon pid)
+- `~/.cache/gondolin-skill/runtime/` — shared SDK install
+- `~/.cache/gondolin-skill/logs/rewrite.log` — per-call audit log
