@@ -1,0 +1,14 @@
+{
+  "name": "gondolin",
+  "owner": {
+    "name": "Patrick Debois",
+    "email": "patrick.debois@jedi.be"
+  },
+  "plugins": [
+    {
+      "name": "gondolin-sandbox",
+      "source": "./plugins/gondolin-sandbox",
+      "description": "Sandbox every Bash/Read/Write/Edit tool call in a persistent gondolin microVM."
+    }
+  ]
+}

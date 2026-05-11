@@ -1,0 +1,10 @@
+- Check bashoutput works
+- Check bash kill works
+- Claude ! Shell mapping
+- Use both as skill and
+- Secrets mapping 
+- .env control
+- Enable/Disable __HOST__ for debug
+- Agent check - seperate fork or not
+- change image to ububtu
+- Append system prompt hint that we are in a vm

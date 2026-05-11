@@ -1,0 +1,11 @@
+{
+  "name": "gondolin-sandbox",
+  "version": "0.1.0",
+  "description": "Sandbox every Bash/Read/Write/Edit tool call in a persistent gondolin microVM. The host project dir is bind-mounted at /workspace inside the guest; state (env, packages, processes, files) survives between calls until SessionEnd.",
+  "author": {
+    "name": "Patrick Debois",
+    "email": "patrick.debois@jedi.be"
+  },
+  "homepage": "https://github.com/patrickdebois/cc-gondolin-sandbox",
+  "license": "MIT"
+}

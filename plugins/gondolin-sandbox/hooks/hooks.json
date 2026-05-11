@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/plugins/gondolin-sandbox/skills/gondolin-sandbox/bash.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/gondolin-sandbox/bash.sh"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/plugins/gondolin-sandbox/skills/gondolin-sandbox/read.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/gondolin-sandbox/read.sh"
           }
         ]
       },
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/plugins/gondolin-sandbox/skills/gondolin-sandbox/write.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/gondolin-sandbox/write.sh"
           }
         ]
       },
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/plugins/gondolin-sandbox/skills/gondolin-sandbox/edit.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/gondolin-sandbox/edit.sh"
           }
         ]
       }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/plugins/gondolin-sandbox/skills/gondolin-sandbox/post.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/gondolin-sandbox/post.sh"
           }
         ]
       }
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PROJECT_DIR}/plugins/gondolin-sandbox/skills/gondolin-sandbox/cleanup.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/skills/gondolin-sandbox/cleanup.sh"
           }
         ]
       }
