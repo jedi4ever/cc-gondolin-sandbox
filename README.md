@@ -95,12 +95,8 @@ Or, from a shell:
 
 ```sh
 claude plugin marketplace add jedi4ever/cc-gondolin-sandbox
-claude plugin install gondolin-sandbox@gondolin --scope project   # or --user
+claude plugin install gondolin-sandbox@gondolin --scope project   # or --scope user
 ```
-
-Pass `--project` to install into the current project only
-(`.claude/settings.json`), or `--user` to install for your user
-globally (`~/.claude/settings.json`).
 
 The first command registers this repo as a plugin marketplace (named
 `gondolin` from `.claude-plugin/marketplace.json`); the second
@@ -114,6 +110,9 @@ To install from a local clone instead of GitHub:
 /plugin marketplace add /path/to/microvm
 /plugin install gondolin-sandbox@gondolin --project   # or --user
 ```
+
+# Updating
+claude plugin marketplace update
 
 ### Using it in this repo
 
