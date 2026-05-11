@@ -87,9 +87,20 @@ plugins/gondolin-sandbox/
 Inside Claude Code, in any project where you want the sandbox:
 
 ```text
-/plugin marketplace add patrickdebois/microvm
+/plugin marketplace add jedi4ever/cc-gondolin-sandbox
 /plugin install gondolin-sandbox@gondolin
 ```
+
+Or, from a shell:
+
+```sh
+claude plugin marketplace add jedi4ever/cc-gondolin-sandbox
+claude plugin install gondolin-sandbox@gondolin --scope project   # or --user
+```
+
+Pass `--project` to install into the current project only
+(`.claude/settings.json`), or `--user` to install for your user
+globally (`~/.claude/settings.json`).
 
 The first command registers this repo as a plugin marketplace (named
 `gondolin` from `.claude-plugin/marketplace.json`); the second
@@ -101,7 +112,7 @@ To install from a local clone instead of GitHub:
 
 ```text
 /plugin marketplace add /path/to/microvm
-/plugin install gondolin-sandbox@gondolin
+/plugin install gondolin-sandbox@gondolin --project   # or --user
 ```
 
 ### Using it in this repo
