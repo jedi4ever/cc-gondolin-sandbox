@@ -214,6 +214,6 @@ else if (subcmd === "exec") runExec();
 else if (subcmd === "shutdown") runShutdown();
 else {
   console.error(`unknown subcommand: ${subcmd}`);
-  console.error("usage: helper.mjs (daemon|exec|shutdown) [options]");
+  console.error("usage: vm.js (daemon|exec|shutdown) [options]");
   process.exit(2);
 }

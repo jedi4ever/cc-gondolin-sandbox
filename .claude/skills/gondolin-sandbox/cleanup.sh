@@ -18,8 +18,8 @@ shutdown_one() {
   local sock="$scope_dir/vm.sock"
   local pid_file="$scope_dir/daemon.pid"
 
-  if [ -S "$sock" ] && [ -f "$RUNTIME_DIR/helper.mjs" ]; then
-    node "$RUNTIME_DIR/helper.mjs" shutdown --sock "$sock" 2>/dev/null || true
+  if [ -S "$sock" ] && [ -f "$RUNTIME_DIR/vm.js" ]; then
+    node "$RUNTIME_DIR/vm.js" shutdown --sock "$sock" 2>/dev/null || true
   fi
 
   if [ -f "$pid_file" ]; then
